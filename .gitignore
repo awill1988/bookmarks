@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.cache/
+.direnv/
+.env
+.venv/
+.python-version
+.ruff_cache/
+.mypy_cache/
+result
+result-*
+bookmarks-*.json
+models/
