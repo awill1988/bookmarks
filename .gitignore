@@ -1,3 +1,4 @@
+.pytest_cache/
 __pycache__/
 *.py[cod]
 .cache/
@@ -9,5 +10,7 @@ __pycache__/
 .mypy_cache/
 result
 result-*
-bookmarks-*.json
+*.json
+*.db
+*.pt
 models/

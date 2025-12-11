@@ -1,5 +1,3 @@
-"""Compatibility exports for LangGraph workflows."""
-
 from bookmarks.graphs.embed import (
     DEFAULT_DB_PATH,
     GraphState,

@@ -28,9 +28,15 @@ dev = [
   "pytest>=9.0",
   "ruff>=0.14"
 ]
+torch = [
+  "torch>=2.9"
+]
 
 [dependency-groups]
 dev = [
   "pytest>=9.0",
   "ruff>=0.14"
+]
+torch = [
+  "torch>=2.9"
 ]

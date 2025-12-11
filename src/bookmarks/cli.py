@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shutil
+import sqlite3
 import urllib.error
 import urllib.request
 from functools import partial
@@ -10,7 +11,8 @@ from pathlib import Path
 from typing import Any
 from langchain_community.llms.llamacpp import LlamaCpp
 
-from bookmarks.graph import DEFAULT_DB_PATH, GraphState, build_demo_graph
+from bookmarks.graphs.embed import DEFAULT_DB_PATH, GraphState, build_demo_graph
+from bookmarks.graphs.schema import DEFAULT_SCHEMA_SQL_PATH, build_schema_graph
 
 
 def configure_logging() -> None:
@@ -45,6 +47,28 @@ def dump_cli_args(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_sqlite_embeddings(db_path: Path) -> tuple[list[dict[str, str | None]], list[list[float]]]:
+    if not db_path.exists():
+        raise FileNotFoundError(f"expected sqlite store at {db_path}")
+
+    bookmarks: list[dict[str, str | None]] = []
+    vectors: list[list[float]] = []
+
+    with sqlite3.connect(db_path) as conn:
+        for url, title, vector_text in conn.execute(
+            "select url, title, vector from bookmark_embeddings order by id"
+        ):
+            try:
+                vector = json.loads(vector_text)
+            except json.JSONDecodeError:
+                logging.warning("skipping malformed vector for %s", url)
+                continue
+            bookmarks.append({"url": url, "title": title})
+            vectors.append(vector)
+
+    return bookmarks, vectors
+
+
 def run_demo_graph(args: argparse.Namespace) -> int:
     graph = build_demo_graph()
 
@@ -56,6 +80,43 @@ def run_demo_graph(args: argparse.Namespace) -> int:
 
     stored = len(final_state.get("bookmarks") or [])
     logging.info("graph run complete; stored %s bookmarks to %s", stored, args.db_path)
+    return 0
+
+
+def run_export_torch(args: argparse.Namespace) -> int:
+    try:
+        import torch
+    except ImportError:
+        logging.error("torch not installed; install torch to run this command")
+        return 1
+
+    db_path = args.db_path
+    output_path = args.output
+
+    try:
+        bookmarks, vectors = load_sqlite_embeddings(db_path)
+    except FileNotFoundError as exc:
+        logging.error("%s", exc)
+        return 1
+
+    if not vectors:
+        logging.error("no embeddings found in %s", db_path)
+        return 1
+
+    try:
+        tensor = torch.tensor(vectors, dtype=torch.float32)
+    except Exception as exc:
+        logging.error("failed to convert embeddings to torch tensor: %s", exc)
+        return 1
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        torch.save({"embeddings": tensor, "bookmarks": bookmarks}, output_path)
+    except OSError as exc:
+        logging.error("failed to write torch artifact: %s", exc)
+        return 1
+
+    logging.info("torch export wrote %s entries to %s", len(vectors), output_path)
     return 0
 
 
@@ -167,6 +228,20 @@ def run_schema_stub(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_schema_graph(args: argparse.Namespace) -> int:
+    try:
+        model_path = resolve_schema_model_path()
+        graph = build_schema_graph(model_path, output_path=args.output)
+        final_state = graph.invoke({"source_path": args.input, "output_path": args.output})
+    except (FileNotFoundError, ImportError, RuntimeError, ValueError) as exc:
+        logging.error("schema graph failed: %s", exc)
+        return 1
+
+    destination = final_state.get("output_path") or args.output or DEFAULT_SCHEMA_SQL_PATH
+    logging.info("schema graph wrote sql to %s", destination)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -241,6 +316,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     export_parser.set_defaults(command_handler=run_demo_graph)
 
+    torch_parser = gen_subparsers.add_parser(
+        "torch",
+        help="serialize sqlite embeddings into a torch artifact",
+    )
+    torch_parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=DEFAULT_DB_PATH,
+        help=f"source sqlite embeddings (default: {DEFAULT_DB_PATH})",
+    )
+    torch_parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path("vectors.pt"),
+        help="where to write the torch artifact (default: vectors.pt)",
+    )
+    torch_parser.set_defaults(command_handler=run_export_torch)
+
     schema_parser = gen_subparsers.add_parser(
         "schema",
         help="generate a bookmark schema via a local llama-cpp model",
@@ -258,6 +351,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional path to write the schema recommendation",
     )
     schema_parser.set_defaults(command_handler=run_schema_stub)
+
+    schema_graph_parser = gen_subparsers.add_parser(
+        "schema-graph",
+        help="infer a JSON Schema and synthesize SQL via a LangGraph workflow",
+    )
+    schema_graph_parser.add_argument(
+        "-i",
+        "--input",
+        type=Path,
+        required=True,
+        help="path to the raw bookmark export to inspect",
+    )
+    schema_graph_parser.add_argument(
+        "--output",
+        type=Path,
+        default=DEFAULT_SCHEMA_SQL_PATH,
+        help=f"where to write the generated sql (default: {DEFAULT_SCHEMA_SQL_PATH})",
+    )
+    schema_graph_parser.set_defaults(command_handler=run_schema_graph)
 
     models_parser = subparsers.add_parser(
         "models",
