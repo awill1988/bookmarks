@@ -9,5 +9,7 @@ Centralize and evolve your bookmarks.
 - Install deps inside the shell: `uv sync` (add `--group torch` to enable Torch-based commands).
 - Run the demo export flow: `uv run bookmarks gen export -i bookmarks.json --db-path vectors.db`.
 - Convert stored embeddings into a Torch artifact (requires Torch group): `uv run bookmarks gen torch --db-path vectors.db --output vectors.pt`.
+- Inspect a Torch artifact without Docker: `uv run bookmarks vis summary --artifact vectors.pt --limit 5`.
+- Explore clusters and nearest neighbors: `uv run bookmarks vis cluster --artifact vectors.pt --clusters 6` or `uv run bookmarks vis neighbors --artifact vectors.pt --index 0` (requires torch group).
 - Explore the `.pt` artifact with Jupyter via Docker: `docker compose up torch_playground` then open `http://localhost:8888` and load `/workspace/vectors.pt`.
 - Infer a JSON Schema and synthesize a bookmark SQL schema via LangGraph: `uv run bookmarks gen schema-graph -i bookmarks.json --output schema.sql`.
