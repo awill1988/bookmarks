@@ -1,0 +1,23 @@
+name: test
+
+on:
+  push:
+    branches: ['*']
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install nix
+        uses: cachix/install-nix-action@v27
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: test bookmarks cli
+        run: nix develop --command uv run bookmarks

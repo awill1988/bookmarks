@@ -7,23 +7,23 @@ from pathlib import Path
 from bookmarks.graphs.embed import GraphState, build_demo_graph
 
 
-def load_sqlite_embeddings(db_path: Path) -> tuple[list[dict[str, str | None]], list[list[float]]]:
+def load_sqlite_embeddings(db_path: Path) -> tuple[list[dict[str, str | int | None]], list[list[float]]]:
     if not db_path.exists():
         raise FileNotFoundError(f"expected sqlite store at {db_path}")
 
-    bookmarks: list[dict[str, str | None]] = []
+    bookmarks: list[dict[str, str | int | None]] = []
     vectors: list[list[float]] = []
 
     with sqlite3.connect(db_path) as conn:
-        for url, title, vector_text in conn.execute(
-            "select url, title, vector from bookmark_embeddings order by id"
+        for url, title, timestamp, vector_text in conn.execute(
+            "select url, title, timestamp, vector from bookmark_embeddings order by id"
         ):
             try:
                 vector = json.loads(vector_text)
             except json.JSONDecodeError:
                 logging.warning("skipping malformed vector for %s", url)
                 continue
-            bookmarks.append({"url": url, "title": title})
+            bookmarks.append({"url": url, "title": title, "timestamp": timestamp})
             vectors.append(vector)
 
     return bookmarks, vectors

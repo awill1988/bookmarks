@@ -9,3 +9,10 @@
 ## Pythonic development
 
 - Prefer context managers (`with` blocks) for resource management instead of try/except patterns when handling files or other closable resources.
+
+## Embeddings and temporal features
+
+- **Goal**: accurate bookmark placement into folders via clustering
+- **Approach**: concatenate temporal features to text embeddings for automatic temporal + semantic grouping
+- **Missing dates**: use median timestamp or neutral value (0.5 normalized) to avoid null-date clustering
+- **Rationale**: placement accuracy over interpretability; clustering naturally balances content similarity with temporal proximity

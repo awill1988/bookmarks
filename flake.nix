@@ -17,7 +17,6 @@
             pkgs.uv
             python_pkgs.hatchling
           ];
-          # mkShell provides stdenv.cc automatically with proper platform-specific setup
         };
       });
 }

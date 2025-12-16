@@ -102,6 +102,11 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
         default=2000,
         help="max points to cluster for speed",
     )
+    cluster_parser.add_argument(
+        "--include-stop-words",
+        action="store_true",
+        help="include stop words in token analysis",
+    )
     cluster_parser.set_defaults(command_handler=run_vis_cluster)
 
     neighbors_parser = vis_subparsers.add_parser(
@@ -149,8 +154,26 @@ def _load_torch_artifact(artifact: Path):
     return tensor, bookmarks
 
 
-def _tokenize(text: str) -> list[str]:
-    return [chunk for chunk in text.lower().split() if chunk.isascii()]
+def _tokenize(text: str, include_stop_words: bool = False) -> list[str]:
+    import string
+
+    tokens = [chunk for chunk in text.lower().split() if chunk.isascii()]
+
+    # Filter pure punctuation tokens (common title separators)
+    tokens = [tok for tok in tokens if not all(c in string.punctuation for c in tok)]
+
+    if include_stop_words:
+        return tokens
+
+    import nltk
+    try:
+        stop_set = set(nltk.corpus.stopwords.words("english"))
+    except LookupError:
+        # Download stopwords if not available
+        nltk.download("stopwords", quiet=True)
+        stop_set = set(nltk.corpus.stopwords.words("english"))
+
+    return [tok for tok in tokens if tok not in stop_set]
 
 
 def _kmeans(tensor, clusters: int, iterations: int = 10) -> list[int]:
@@ -171,6 +194,20 @@ def _kmeans(tensor, clusters: int, iterations: int = 10) -> list[int]:
             if mask.any():
                 centroids[idx] = tensor[mask].mean(dim=0)
     return labels.tolist()
+
+
+def _format_timestamp(ts_microseconds: int | None) -> str:
+    """Convert microsecond timestamp to human-readable date."""
+    if ts_microseconds is None:
+        return "unknown"
+    try:
+        from datetime import datetime
+        # Firefox timestamps are in microseconds
+        ts_seconds = ts_microseconds / 1_000_000 if ts_microseconds > 10_000_000_000 else ts_microseconds
+        dt = datetime.fromtimestamp(ts_seconds)
+        return dt.strftime("%Y-%m-%d")
+    except Exception:
+        return "invalid"
 
 
 def run_vis_cluster(args: argparse.Namespace) -> int:
@@ -201,21 +238,35 @@ def run_vis_cluster(args: argparse.Namespace) -> int:
         bookmarks = bookmarks[:capped]
 
     labels = _kmeans(tensor, clusters=args.clusters)
-    buckets: dict[int, list[str]] = {}
+    buckets: dict[int, list[tuple[str, int | None]]] = {}
     for idx, label in enumerate(labels):
         title = bookmarks[idx].get("title") or bookmarks[idx].get("url") or ""
-        buckets.setdefault(label, []).append(title)
+        timestamp = bookmarks[idx].get("timestamp")
+        buckets.setdefault(label, []).append((title, timestamp))
 
-    for label, titles in sorted(buckets.items()):
+    for label, items in sorted(buckets.items()):
         all_tokens: list[str] = []
-        for title in titles:
-            all_tokens.extend(_tokenize(title))
+        timestamps: list[int] = []
+        for title, ts in items:
+            all_tokens.extend(_tokenize(title, include_stop_words=args.include_stop_words))
+            if ts is not None:
+                timestamps.append(ts)
+
         counter: dict[str, int] = {}
         for tok in all_tokens:
             counter[tok] = counter.get(tok, 0) + 1
         top_tokens = sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[: args.top_tokens]
         token_text = ", ".join(tok for tok, _ in top_tokens) or "(no tokens)"
-        logging.info("cluster %s (%s items): %s", label, len(titles), token_text)
+
+        # Calculate temporal range
+        if timestamps:
+            min_ts = min(timestamps)
+            max_ts = max(timestamps)
+            date_range = f"{_format_timestamp(min_ts)} to {_format_timestamp(max_ts)}"
+        else:
+            date_range = "no dates"
+
+        logging.info("cluster %s (%s items, %s): %s", label, len(items), date_range, token_text)
 
     return 0
 
@@ -263,9 +314,11 @@ def run_vis_neighbors(args: argparse.Namespace) -> int:
     )[: args.top_k]
 
     target = bookmarks[target_idx]
-    logging.info("neighbors for [%s] url=%s title=%s", target_idx, target.get("url"), target.get("title"))
+    target_date = _format_timestamp(target.get("timestamp"))
+    logging.info("neighbors for [%s] (%s) url=%s title=%s", target_idx, target_date, target.get("url"), target.get("title"))
     for idx, score in ranked:
         entry = bookmarks[idx]
-        logging.info("  -> [%s] score=%.4f url=%s title=%s", idx, score, entry.get("url"), entry.get("title"))
+        entry_date = _format_timestamp(entry.get("timestamp"))
+        logging.info("  -> [%s] score=%.4f (%s) url=%s title=%s", idx, score, entry_date, entry.get("url"), entry.get("title"))
 
     return 0
