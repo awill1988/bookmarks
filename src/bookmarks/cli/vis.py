@@ -133,6 +133,47 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
     )
     neighbors_parser.set_defaults(command_handler=run_vis_neighbors)
 
+    organize_parser = vis_subparsers.add_parser(
+        "organize",
+        help="multi-resolution clustering for bookmark organization",
+    )
+    organize_parser.add_argument(
+        "--artifact",
+        type=Path,
+        default=Path("vectors.pt"),
+        help="path to the torch artifact to inspect (default: vectors.pt)",
+    )
+    organize_parser.add_argument(
+        "--resolutions",
+        type=str,
+        default="all,year,quarter",
+        help="comma-separated resolutions: all,year,quarter,month (default: all,year,quarter)",
+    )
+    organize_parser.add_argument(
+        "--clusters",
+        type=int,
+        default=6,
+        help="how many clusters per resolution (default: 6)",
+    )
+    organize_parser.add_argument(
+        "--top-tokens",
+        type=int,
+        default=8,
+        help="how many frequent tokens to show per cluster",
+    )
+    organize_parser.add_argument(
+        "--samples",
+        type=int,
+        default=3,
+        help="how many sample bookmarks to include per cluster",
+    )
+    organize_parser.add_argument(
+        "--output",
+        type=Path,
+        help="output file for organization results (JSON)",
+    )
+    organize_parser.set_defaults(command_handler=run_vis_organize)
+
 
 def _load_torch_artifact(artifact: Path):
     try:
@@ -278,6 +319,175 @@ def _cosine_similarity(tensor, index: int):
     normed = torch.nn.functional.normalize(tensor, dim=1)
     sims = torch.matmul(normed, normed[index])
     return sims.tolist()
+
+
+def _partition_by_time(bookmarks: list[dict], resolution: str) -> dict[str, list[tuple[int, dict]]]:
+    """Partition bookmarks by time resolution, returning {period: [(index, bookmark), ...]}"""
+    from datetime import datetime
+
+    partitions: dict[str, list[tuple[int, dict]]] = {}
+
+    for idx, bookmark in enumerate(bookmarks):
+        ts = bookmark.get("timestamp")
+        if ts is None:
+            # Put bookmarks without timestamps in 'unknown' partition
+            partitions.setdefault("unknown", []).append((idx, bookmark))
+            continue
+
+        # Convert microseconds to datetime
+        ts_seconds = ts / 1_000_000 if ts > 10_000_000_000 else ts
+        try:
+            dt = datetime.fromtimestamp(ts_seconds)
+        except (ValueError, OSError):
+            partitions.setdefault("unknown", []).append((idx, bookmark))
+            continue
+
+        # Determine partition key based on resolution
+        if resolution == "year":
+            key = str(dt.year)
+        elif resolution == "quarter":
+            quarter = (dt.month - 1) // 3 + 1
+            key = f"{dt.year}-Q{quarter}"
+        elif resolution == "month":
+            key = f"{dt.year}-{dt.month:02d}"
+        else:  # "all" or unknown
+            key = "all"
+
+        partitions.setdefault(key, []).append((idx, bookmark))
+
+    return partitions
+
+
+def run_vis_organize(args: argparse.Namespace) -> int:
+    import json
+
+    try:
+        import torch
+    except ImportError:
+        logging.error("torch not installed; install torch to run this command")
+        return 1
+
+    try:
+        tensor, bookmarks = _load_torch_artifact(args.artifact)
+    except (ImportError, FileNotFoundError, ValueError) as exc:
+        logging.error("%s", exc)
+        return 1
+    except Exception as exc:  # pragma: no cover
+        logging.error("failed to load artifact: %s", exc)
+        return 1
+
+    count = tensor.shape[0]
+    if count == 0:
+        logging.error("no embeddings available")
+        return 1
+
+    resolutions = [r.strip() for r in args.resolutions.split(",")]
+    results: dict[str, dict] = {}
+
+    for resolution in resolutions:
+        logging.info("processing resolution: %s", resolution)
+
+        if resolution == "all":
+            # Single clustering of all bookmarks
+            partitions = {"all": [(i, bookmarks[i]) for i in range(len(bookmarks))]}
+        else:
+            # Partition by time
+            partitions = _partition_by_time(bookmarks, resolution)
+
+        resolution_results: dict[str, dict] = {}
+
+        for partition_key, items in sorted(partitions.items()):
+            if len(items) < args.clusters:
+                logging.warning("partition %s has only %s items, skipping", partition_key, len(items))
+                continue
+
+            # Extract indices and bookmarks
+            indices = [idx for idx, _ in items]
+            partition_bookmarks = [bm for _, bm in items]
+
+            # Cluster this partition
+            partition_tensor = tensor[indices]
+            labels = _kmeans(partition_tensor, clusters=args.clusters)
+
+            # Analyze clusters
+            buckets: dict[int, list[tuple[int, str, int | None]]] = {}
+            for local_idx, label in enumerate(labels):
+                global_idx = indices[local_idx]
+                bookmark = partition_bookmarks[local_idx]
+                title = bookmark.get("title") or bookmark.get("url") or ""
+                timestamp = bookmark.get("timestamp")
+                buckets.setdefault(label, []).append((global_idx, title, timestamp))
+
+            clusters_info = []
+            for cluster_id, cluster_items in sorted(buckets.items()):
+                # Token analysis
+                all_tokens: list[str] = []
+                timestamps: list[int] = []
+                for _, title, ts in cluster_items:
+                    all_tokens.extend(_tokenize(title, include_stop_words=False))
+                    if ts is not None:
+                        timestamps.append(ts)
+
+                counter: dict[str, int] = {}
+                for tok in all_tokens:
+                    counter[tok] = counter.get(tok, 0) + 1
+                top_tokens = sorted(counter.items(), key=lambda kv: kv[1], reverse=True)[: args.top_tokens]
+
+                # Date range
+                if timestamps:
+                    min_ts = min(timestamps)
+                    max_ts = max(timestamps)
+                    date_range = f"{_format_timestamp(min_ts)} to {_format_timestamp(max_ts)}"
+                else:
+                    date_range = "no dates"
+
+                # Sample bookmarks
+                samples = []
+                for idx, title, ts in cluster_items[: args.samples]:
+                    samples.append({
+                        "index": idx,
+                        "title": title,
+                        "date": _format_timestamp(ts),
+                        "url": bookmarks[idx].get("url"),
+                    })
+
+                cluster_info = {
+                    "cluster_id": cluster_id,
+                    "count": len(cluster_items),
+                    "date_range": date_range,
+                    "top_tokens": [tok for tok, _ in top_tokens],
+                    "samples": samples,
+                    "bookmark_indices": [idx for idx, _, _ in cluster_items],
+                }
+                clusters_info.append(cluster_info)
+
+                # Log summary
+                token_text = ", ".join(tok for tok, _ in top_tokens) or "(no tokens)"
+                logging.info("  %s cluster %s (%s items, %s): %s", partition_key, cluster_id, len(cluster_items), date_range, token_text)
+
+            resolution_results[partition_key] = {
+                "count": len(items),
+                "clusters": clusters_info,
+            }
+
+        results[resolution] = resolution_results
+
+    # Output results
+    output_data = {
+        "resolutions": results,
+        "total_bookmarks": count,
+    }
+
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("w") as f:
+            json.dump(output_data, f, indent=2)
+        logging.info("wrote multi-resolution clustering to %s", args.output)
+    else:
+        # Print to stdout
+        print(json.dumps(output_data, indent=2))
+
+    return 0
 
 
 def run_vis_neighbors(args: argparse.Namespace) -> int:
