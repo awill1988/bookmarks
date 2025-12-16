@@ -17,11 +17,13 @@
             pkgs.uv
             python_pkgs.hatchling
             pkgs.stdenv.cc.cc
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
             pkgs.glibc
             pkgs.glibc.dev
           ];
           shellHook = ''
             export LD_LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc ]}:$LD_LIBRARY_PATH
+          '' + pkgs.lib.optionalString pkgs.stdenv.isLinux ''
             export LIBRARY_PATH=${pkgs.lib.makeLibraryPath [ pkgs.stdenv.cc.cc pkgs.glibc ]}:$LIBRARY_PATH
             export CPATH=${pkgs.glibc.dev}/include:$CPATH
           '';
