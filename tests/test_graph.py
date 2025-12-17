@@ -63,9 +63,11 @@ def test_demo_graph_persists_embeddings(monkeypatch: pytest.MonkeyPatch, tmp_pat
 
 def test_schema_graph_writes_sql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class DummyLlama:
-        def __init__(self, model_path: str, temperature: float, n_threads: int, verbose: bool):  # noqa: D401
+        def __init__(self, model_path: str, temperature: float, n_ctx: int, n_batch: int, n_threads: int, verbose: bool):  # noqa: D401
             self.model_path = model_path
             self.temperature = temperature
+            self.n_ctx = n_ctx
+            self.n_batch = n_batch
             self.n_threads = n_threads
             self.verbose = verbose
 

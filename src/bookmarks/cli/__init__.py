@@ -1,9 +1,9 @@
 import argparse
 from pathlib import Path
 
-from bookmarks.cli import common, gen, models, vis
+from bookmarks.cli import common, gen, vis
 from bookmarks.cli.embed import run_demo_graph, run_export_torch
-from bookmarks.cli.schema import run_fetch_model, run_schema_graph, run_schema_stub
+from bookmarks.cli.schema import run_schema_graph, run_schema_stub
 from bookmarks.cli.vis import run_vis_torch
 
 
@@ -56,7 +56,6 @@ def build_parser() -> argparse.ArgumentParser:
     args_parser.set_defaults(command_handler=common.dump_cli_args)
 
     gen.register_gen_commands(subparsers)
-    models.register_model_commands(subparsers)
     vis.register_vis_command(subparsers)
 
     return parser
@@ -81,7 +80,6 @@ __all__ = [
     "run_demo_graph",
     "run_schema_stub",
     "run_schema_graph",
-    "run_fetch_model",
     "run_export_torch",
     "run_vis_torch",
 ]

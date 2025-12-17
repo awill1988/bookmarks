@@ -1,14 +1,13 @@
 import argparse
 import logging
 import os
-import shutil
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 from langchain_community.llms.llamacpp import LlamaCpp
 
 from bookmarks.graphs.schema import DEFAULT_SCHEMA_SQL_PATH, build_schema_graph
+from bookmarks.models.gguf import DEFAULT_CACHE_DIR, ensure_gguf_model
+from bookmarks.models.gpu import get_gpu_config
 
 SCHEMA_PROMPT = (
     "You are designing a deterministic sqlite schema for bookmarking. "
@@ -17,9 +16,6 @@ SCHEMA_PROMPT = (
     "Keep the response concise and reproducible."
 )
 
-SCHEMA_MODEL_ENV = "BOOKMARKS_MODEL_PATH"
-SCHEMA_MODEL_URL_ENV = "BOOKMARKS_MODEL_URL"
-DEFAULT_SCHEMA_MODEL = Path("models/schema.llama3.gguf")
 
 
 def build_schema_prompt(input_path: Path) -> str:
@@ -34,11 +30,16 @@ def build_schema_prompt(input_path: Path) -> str:
 
 
 def generate_schema_local(prompt: str, model_path: Path) -> str:
+    gpu_config = get_gpu_config()
+
     try:
         llm = LlamaCpp(
             model_path=str(model_path),
             temperature=0.0,
+            n_ctx=4096,  # context window size - needs to handle large bookmark schemas
+            n_batch=512,  # batch size for prompt processing
             n_threads=max(os.cpu_count() or 1, 1),
+            n_gpu_layers=gpu_config.n_gpu_layers,  # offload layers to GPU if available
             verbose=False,
         )
     except Exception as exc:
@@ -52,52 +53,27 @@ def generate_schema_local(prompt: str, model_path: Path) -> str:
     return str(result).strip()
 
 
-def resolve_schema_model_path() -> Path:
-    candidate = Path(os.getenv(SCHEMA_MODEL_ENV, "") or DEFAULT_SCHEMA_MODEL)
-    if not candidate.exists():
-        raise FileNotFoundError(f"expected schema model at {candidate}")
-    return candidate
+def ensure_schema_model() -> Path:
+    """ensure schema model is available, downloading if necessary."""
+    repo_id = os.getenv("BOOKMARKS_SCHEMA_REPO_ID")
+    filename = os.getenv("BOOKMARKS_SCHEMA_FILENAME")
 
-
-def resolve_schema_model_url(explicit_url: str | None) -> str:
-    url = explicit_url or os.getenv(SCHEMA_MODEL_URL_ENV, "")
-    if not url:
-        raise ValueError("no model url provided; set BOOKMARKS_MODEL_URL or pass --url")
-    return url
-
-
-def fetch_model(url: str, destination: Path, overwrite: bool = False) -> Path:
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() and not overwrite:
-        return destination
-
-    request = urllib.request.Request(url)
     try:
-        with urllib.request.urlopen(request) as response, destination.open("wb") as handle:
-            shutil.copyfileobj(response, handle)
-    except urllib.error.URLError as exc:
-        raise RuntimeError(f"download failed: {exc}") from exc
+        return ensure_gguf_model(
+            repo_id=repo_id,
+            filename=filename,
+            cache_dir=DEFAULT_CACHE_DIR,
+        )
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        raise FileNotFoundError(f"failed to resolve schema model: {exc}") from exc
 
-    return destination
 
-
-def run_fetch_model(args: argparse.Namespace) -> int:
-    try:
-        url = resolve_schema_model_url(args.url)
-        destination = Path(args.path or DEFAULT_SCHEMA_MODEL)
-        fetch_model(url, destination, overwrite=args.force)
-    except (ValueError, RuntimeError) as exc:
-        logging.error("model fetch failed: %s", exc)
-        return 1
-
-    logging.info("model fetched to %s", destination)
-    return 0
 
 
 def run_schema_stub(args: argparse.Namespace) -> int:
     prompt = build_schema_prompt(args.input)
     try:
-        model_path = resolve_schema_model_path()
+        model_path = ensure_schema_model()
         schema_text = generate_schema_local(prompt, model_path)
     except (FileNotFoundError, ImportError, RuntimeError) as exc:
         logging.error("schema generation failed: %s", exc)
@@ -119,7 +95,7 @@ def run_schema_stub(args: argparse.Namespace) -> int:
 
 def run_schema_graph(args: argparse.Namespace) -> int:
     try:
-        model_path = resolve_schema_model_path()
+        model_path = ensure_schema_model()
         graph = build_schema_graph(model_path, output_path=args.output)
         final_state = graph.invoke({"source_path": args.input, "output_path": args.output})
     except (FileNotFoundError, ImportError, RuntimeError, ValueError) as exc:

@@ -7,6 +7,8 @@ from typing import Any, Callable, TypedDict
 from langchain_community.llms.llamacpp import LlamaCpp
 from langgraph.graph import END, StateGraph
 
+from bookmarks.models.gpu import get_gpu_config
+
 DEFAULT_SCHEMA_SQL_PATH = Path("schema.sql")
 
 
@@ -167,12 +169,14 @@ def build_schema_prompt_from_data(json_schema: dict[str, Any], field_hints: dict
 
 def load_raw_payload_node(state: SchemaGraphState) -> SchemaGraphState:
     source_path = Path(state["source_path"])
+    logging.info("loading bookmarks from %s", source_path)
     if not source_path.exists():
         raise FileNotFoundError(f"bookmark source {source_path} does not exist")
 
     with source_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
 
+    logging.info("loaded %d top-level items", len(payload) if isinstance(payload, list) else 1)
     return {"raw_payload": payload}
 
 
@@ -181,8 +185,17 @@ def infer_schema_node(state: SchemaGraphState) -> SchemaGraphState:
     if payload is None:
         raise ValueError("schema graph requires raw_payload")
 
+    logging.info("inferring json schema from payload structure")
     json_schema = infer_json_schema(payload)
     field_hints = derive_field_hints(json_schema)
+
+    hint_summary = []
+    if field_hints.get("timestamps"):
+        hint_summary.append(f"{len(field_hints['timestamps'])} timestamp fields")
+    if field_hints.get("folders"):
+        hint_summary.append(f"{len(field_hints['folders'])} folder/tag fields")
+    if hint_summary:
+        logging.info("detected: %s", ", ".join(hint_summary))
 
     return {"json_schema": json_schema, "field_hints": field_hints}
 
@@ -192,10 +205,12 @@ def synthesize_sql_node(model: LlamaCpp):
         json_schema = state.get("json_schema") or {}
         field_hints = state.get("field_hints") or {}
         prompt = build_schema_prompt_from_data(json_schema, field_hints)
+        logging.info("invoking llm to generate sql schema (this may take a while)")
         try:
             result = model.invoke(prompt)
         except Exception as exc:  # pragma: no cover - passthrough for runtime issues
             raise RuntimeError(f"schema synthesis failed: {exc}") from exc
+        logging.info("llm synthesis complete")
         return {"sql_text": str(result).strip()}
 
     return _synthesize
@@ -207,6 +222,7 @@ def persist_sql_node(default_output: Path | None = None):
         sql_text = state.get("sql_text")
         if not sql_text:
             raise ValueError("no sql_text available for persistence")
+        logging.info("writing sql schema to %s", output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(sql_text, encoding="utf-8")
         return {"output_path": output_path}
@@ -220,12 +236,22 @@ def build_schema_graph(
     llm_factory: Callable[..., LlamaCpp] = LlamaCpp,
 ):
     """Create a LangGraph pipeline to infer schema and synthesize SQL via a local model."""
+    gpu_config = get_gpu_config()
+
+    logging.info("loading language model from %s", model_path)
+    if gpu_config.is_accelerated:
+        logging.info("gpu acceleration enabled: %s backend", gpu_config.backend)
+
     model = llm_factory(
         model_path=str(model_path),
         temperature=0.0,
+        n_ctx=4096,  # context window size - needs to handle large bookmark schemas
+        n_batch=512,  # batch size for prompt processing
         n_threads=max(os.cpu_count() or 1, 1),
-        verbose=False,
+        n_gpu_layers=gpu_config.n_gpu_layers,  # offload layers to GPU if available
+        verbose=True,  # show llama.cpp loading progress
     )
+    logging.info("model loaded successfully")
     graph = StateGraph(SchemaGraphState)
 
     graph.add_node("load", load_raw_payload_node)

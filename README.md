@@ -14,6 +14,41 @@ uv sync                   # base dependencies
 uv sync --group torch     # add torch for visualization commands
 ```
 
+### GPU Acceleration
+
+GPU acceleration is **automatically configured** when entering the nix shell:
+- **macOS (Apple Silicon)**: Metal backend
+- **Linux with NVIDIA GPU**: CUDA backend
+- **Linux/Other**: Vulkan fallback
+
+The flake detects your hardware and sets `CMAKE_ARGS` automatically. After entering the shell, rebuild llama-cpp-python once:
+
+```bash
+uv pip install --force-reinstall --no-cache-dir llama-cpp-python
+```
+
+This provides **5-10x speedup** for schema generation.
+
+**Disable GPU**: `export BOOKMARKS_FORCE_CPU=1` before running commands.
+
+## Model Configuration
+
+Schema generation commands automatically download GGUF models from HuggingFace Hub on first use. Models are cached in the `models/` directory.
+
+**Default model**: TheBloke/Llama-2-7B-Chat-GGUF (Q4_K_M quantization, ~4GB)
+
+**Override defaults** via environment variables:
+```bash
+export BOOKMARKS_SCHEMA_REPO_ID="TheBloke/CodeLlama-7B-GGUF"
+export BOOKMARKS_SCHEMA_FILENAME="codellama-7b.Q4_K_M.gguf"
+```
+
+**First-time usage**: Models download automatically when running:
+```bash
+uv run bookmarks gen schema -i bookmarks.json
+uv run bookmarks gen schema-graph -i bookmarks.json --output schema.sql
+```
+
 ## Command reference
 
 ### Generation commands

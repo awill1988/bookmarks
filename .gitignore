@@ -13,4 +13,8 @@ result-*
 *.json
 *.db
 *.pt
-models/
+*.sql
+models
+^src/bookmarks/models
+.claude
+.uv_cache
