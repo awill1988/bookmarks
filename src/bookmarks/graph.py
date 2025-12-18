@@ -1,4 +1,4 @@
-"""Compatibility exports for LangGraph workflows."""
+"""Compatibility exports for bookmark workflows."""
 
 from bookmarks.graphs.embed import (
     DEFAULT_DB_PATH,

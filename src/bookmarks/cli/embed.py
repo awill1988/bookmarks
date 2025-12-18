@@ -15,16 +15,33 @@ def load_sqlite_embeddings(db_path: Path) -> tuple[list[dict[str, str | int | No
     vectors: list[list[float]] = []
 
     with sqlite3.connect(db_path) as conn:
-        for url, title, timestamp, vector_text in conn.execute(
-            "select url, title, timestamp, vector from bookmark_embeddings order by id"
-        ):
-            try:
-                vector = json.loads(vector_text)
-            except json.JSONDecodeError:
-                logging.warning("skipping malformed vector for %s", url)
-                continue
-            bookmarks.append({"url": url, "title": title, "timestamp": timestamp})
-            vectors.append(vector)
+        try:
+            rows = conn.execute(
+                "select url, title, timestamp, vector from bookmark_embeddings order by id"
+            )
+            for url, title, timestamp, vector_text in rows:
+                try:
+                    vector = json.loads(vector_text)
+                except json.JSONDecodeError:
+                    logging.warning("skipping malformed vector for %s", url)
+                    continue
+                entry: dict[str, str | int | None] = {"url": url, "title": title}
+                if timestamp is not None:
+                    entry["timestamp"] = timestamp
+                bookmarks.append(entry)
+                vectors.append(vector)
+        except sqlite3.OperationalError:
+            rows = conn.execute(
+                "select url, title, vector from bookmark_embeddings order by id"
+            )
+            for url, title, vector_text in rows:
+                try:
+                    vector = json.loads(vector_text)
+                except json.JSONDecodeError:
+                    logging.warning("skipping malformed vector for %s", url)
+                    continue
+                bookmarks.append({"url": url, "title": title})
+                vectors.append(vector)
 
     return bookmarks, vectors
 

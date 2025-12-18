@@ -1,13 +1,15 @@
 import json
 import logging
-import os
 from pathlib import Path
 from typing import Any, Callable, TypedDict
 
-from langchain_community.llms.llamacpp import LlamaCpp
-from langgraph.graph import END, StateGraph
+from smolagents.models import Model
 
-from bookmarks.models.gpu import get_gpu_config
+from bookmarks.agents.llama_cpp_model import LlamaCppChatModel
+from bookmarks.agents.schema_sql_agent import (
+    build_schema_task_prompt,
+    generate_schema_sql_with_retry,
+)
 
 DEFAULT_SCHEMA_SQL_PATH = Path("schema.sql")
 
@@ -147,24 +149,7 @@ def derive_field_hints(json_schema: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def build_schema_prompt_from_data(json_schema: dict[str, Any], field_hints: dict[str, list[str]]) -> str:
-    schema_text = json.dumps(json_schema, indent=2)
-    timestamps = field_hints.get("timestamps") or []
-    folders = field_hints.get("folders") or []
-    hint_lines = []
-    if timestamps:
-        hint_lines.append(f"timestamp candidates: {', '.join(timestamps)}")
-    if folders:
-        hint_lines.append(f"folder/tag candidates: {', '.join(folders)}")
-    hints = "\n".join(hint_lines) if hint_lines else "no explicit timestamp or folder hints found"
-
-    return (
-        "You are generating a deterministic sqlite schema for bookmarks. "
-        "Use the provided JSON Schema to identify meaningful columns, including url, title, "
-        "folder or path metadata, timestamps, and any labels/tags present. "
-        "Return a single CREATE TABLE statement that captures those columns with reasonable "
-        "types and constraints. Avoid INSERT statements. "
-        f"\n\nJSON Schema:\n{schema_text}\n\nHints:\n{hints}"
-    )
+    return build_schema_task_prompt(json_schema, field_hints)
 
 
 def load_raw_payload_node(state: SchemaGraphState) -> SchemaGraphState:
@@ -200,18 +185,15 @@ def infer_schema_node(state: SchemaGraphState) -> SchemaGraphState:
     return {"json_schema": json_schema, "field_hints": field_hints}
 
 
-def synthesize_sql_node(model: LlamaCpp):
+def synthesize_sql_node(model: Model):
     def _synthesize(state: SchemaGraphState) -> SchemaGraphState:
         json_schema = state.get("json_schema") or {}
         field_hints = state.get("field_hints") or {}
         prompt = build_schema_prompt_from_data(json_schema, field_hints)
         logging.info("invoking llm to generate sql schema (this may take a while)")
-        try:
-            result = model.invoke(prompt)
-        except Exception as exc:  # pragma: no cover - passthrough for runtime issues
-            raise RuntimeError(f"schema synthesis failed: {exc}") from exc
+        sql_text = generate_schema_sql_with_retry(model, prompt)
         logging.info("llm synthesis complete")
-        return {"sql_text": str(result).strip()}
+        return {"sql_text": sql_text}
 
     return _synthesize
 
@@ -230,39 +212,27 @@ def persist_sql_node(default_output: Path | None = None):
     return _persist
 
 
+class SchemaWorkflow:
+    def __init__(self, model: Model, output_path: Path | None = None):
+        self._model = model
+        self._output_path = output_path
+
+    def invoke(self, initial_state: SchemaGraphState) -> SchemaGraphState:
+        state: SchemaGraphState = dict(initial_state)
+        state.update(load_raw_payload_node(state))
+        state.update(infer_schema_node(state))
+        state.update(synthesize_sql_node(self._model)(state))
+        state.update(persist_sql_node(self._output_path)(state))
+        return state
+
+
 def build_schema_graph(
     model_path: Path | str,
     output_path: Path | None = None,
-    llm_factory: Callable[..., LlamaCpp] = LlamaCpp,
+    model_factory: Callable[[Path | str], Model] = LlamaCppChatModel,
 ):
-    """Create a LangGraph pipeline to infer schema and synthesize SQL via a local model."""
-    gpu_config = get_gpu_config()
-
+    """Infer a JSON Schema and synthesize sql via a smolagents-backed model."""
     logging.info("loading language model from %s", model_path)
-    if gpu_config.is_accelerated:
-        logging.info("gpu acceleration enabled: %s backend", gpu_config.backend)
-
-    model = llm_factory(
-        model_path=str(model_path),
-        temperature=0.0,
-        n_ctx=4096,  # context window size - needs to handle large bookmark schemas
-        n_batch=512,  # batch size for prompt processing
-        n_threads=max(os.cpu_count() or 1, 1),
-        n_gpu_layers=gpu_config.n_gpu_layers,  # offload layers to GPU if available
-        verbose=True,  # show llama.cpp loading progress
-    )
+    model = model_factory(model_path)
     logging.info("model loaded successfully")
-    graph = StateGraph(SchemaGraphState)
-
-    graph.add_node("load", load_raw_payload_node)
-    graph.add_node("infer_schema", infer_schema_node)
-    graph.add_node("synthesize_sql", synthesize_sql_node(model))
-    graph.add_node("persist_sql", persist_sql_node(output_path))
-
-    graph.set_entry_point("load")
-    graph.add_edge("load", "infer_schema")
-    graph.add_edge("infer_schema", "synthesize_sql")
-    graph.add_edge("synthesize_sql", "persist_sql")
-    graph.add_edge("persist_sql", END)
-
-    return graph.compile()
+    return SchemaWorkflow(model, output_path=output_path)

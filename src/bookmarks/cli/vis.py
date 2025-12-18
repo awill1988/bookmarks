@@ -63,8 +63,8 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
     summary_parser.add_argument(
         "--artifact",
         type=Path,
-        default=Path("vectors.pt"),
-        help="path to the torch artifact to inspect (default: vectors.pt)",
+        default=Path("data/vectors.pt"),
+        help="path to the torch artifact to inspect (default: data/vectors.pt)",
     )
     summary_parser.add_argument(
         "--limit",
@@ -81,8 +81,8 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
     cluster_parser.add_argument(
         "--artifact",
         type=Path,
-        default=Path("vectors.pt"),
-        help="path to the torch artifact to inspect (default: vectors.pt)",
+        default=Path("data/vectors.pt"),
+        help="path to the torch artifact to inspect (default: data/vectors.pt)",
     )
     cluster_parser.add_argument(
         "--clusters",
@@ -116,8 +116,8 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
     neighbors_parser.add_argument(
         "--artifact",
         type=Path,
-        default=Path("vectors.pt"),
-        help="path to the torch artifact to inspect (default: vectors.pt)",
+        default=Path("data/vectors.pt"),
+        help="path to the torch artifact to inspect (default: data/vectors.pt)",
     )
     neighbors_parser.add_argument(
         "--index",
@@ -140,8 +140,8 @@ def register_vis_command(subparsers: argparse._SubParsersAction) -> None:
     organize_parser.add_argument(
         "--artifact",
         type=Path,
-        default=Path("vectors.pt"),
-        help="path to the torch artifact to inspect (default: vectors.pt)",
+        default=Path("data/vectors.pt"),
+        help="path to the torch artifact to inspect (default: data/vectors.pt)",
     )
     organize_parser.add_argument(
         "--resolutions",
@@ -223,18 +223,38 @@ def _kmeans(tensor, clusters: int, iterations: int = 10) -> list[int]:
     count = tensor.shape[0]
     k = min(max(clusters, 1), count)
     # init centroids from first k points for determinism
-    centroids = tensor[:k].clone()
+    try:
+        centroids = tensor[:k].clone()
+    except TypeError:
+        centroids = torch.tensor(list(tensor)[:k]).clone()
 
     for _ in range(iterations):
         # assign
         distances = torch.cdist(tensor, centroids, p=2)
         labels = distances.argmin(dim=1)
         # update
-        for idx in range(k):
-            mask = labels == idx
-            if mask.any():
-                centroids[idx] = tensor[mask].mean(dim=0)
-    return labels.tolist()
+        try:
+            for idx in range(k):
+                mask = labels == idx
+                if mask.any():
+                    centroids[idx] = tensor[mask].mean(dim=0)
+        except Exception:
+            label_rows = list(labels)
+            label_values = [
+                int(row[0]) if isinstance(row, (list, tuple)) and row else int(row)
+                for row in label_rows
+            ]
+            points = list(tensor)
+            for idx in range(k):
+                assigned = [row for row, label in zip(points, label_values, strict=False) if label == idx]
+                if not assigned:
+                    continue
+                cols = list(zip(*assigned))
+                centroids.data[idx] = [sum(col) / len(col) for col in cols]
+    if hasattr(labels, "tolist"):
+        return labels.tolist()
+    label_rows = list(labels)
+    return [int(row[0]) if isinstance(row, (list, tuple)) and row else int(row) for row in label_rows]
 
 
 def _format_timestamp(ts_microseconds: int | None) -> str:
@@ -279,6 +299,7 @@ def run_vis_cluster(args: argparse.Namespace) -> int:
         bookmarks = bookmarks[:capped]
 
     labels = _kmeans(tensor, clusters=args.clusters)
+    include_stop_words = getattr(args, "include_stop_words", False)
     buckets: dict[int, list[tuple[str, int | None]]] = {}
     for idx, label in enumerate(labels):
         title = bookmarks[idx].get("title") or bookmarks[idx].get("url") or ""
@@ -289,7 +310,7 @@ def run_vis_cluster(args: argparse.Namespace) -> int:
         all_tokens: list[str] = []
         timestamps: list[int] = []
         for title, ts in items:
-            all_tokens.extend(_tokenize(title, include_stop_words=args.include_stop_words))
+            all_tokens.extend(_tokenize(title, include_stop_words=include_stop_words))
             if ts is not None:
                 timestamps.append(ts)
 
@@ -318,7 +339,9 @@ def _cosine_similarity(tensor, index: int):
     vector = tensor[index]
     normed = torch.nn.functional.normalize(tensor, dim=1)
     sims = torch.matmul(normed, normed[index])
-    return sims.tolist()
+    if hasattr(sims, "tolist"):
+        return sims.tolist()
+    return list(sims)
 
 
 def _partition_by_time(bookmarks: list[dict], resolution: str) -> dict[str, list[tuple[int, dict]]]:

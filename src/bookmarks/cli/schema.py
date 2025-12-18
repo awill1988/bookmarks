@@ -3,11 +3,10 @@ import logging
 import os
 from pathlib import Path
 
-from langchain_community.llms.llamacpp import LlamaCpp
-
+from bookmarks.agents.llama_cpp_model import LlamaCppChatModel
+from bookmarks.agents.schema_sql_agent import generate_schema_sql_with_retry
 from bookmarks.graphs.schema import DEFAULT_SCHEMA_SQL_PATH, build_schema_graph
 from bookmarks.models.gguf import DEFAULT_CACHE_DIR, ensure_gguf_model
-from bookmarks.models.gpu import get_gpu_config
 
 SCHEMA_PROMPT = (
     "You are designing a deterministic sqlite schema for bookmarking. "
@@ -30,27 +29,12 @@ def build_schema_prompt(input_path: Path) -> str:
 
 
 def generate_schema_local(prompt: str, model_path: Path) -> str:
-    gpu_config = get_gpu_config()
-
     try:
-        llm = LlamaCpp(
-            model_path=str(model_path),
-            temperature=0.0,
-            n_ctx=4096,  # context window size - needs to handle large bookmark schemas
-            n_batch=512,  # batch size for prompt processing
-            n_threads=max(os.cpu_count() or 1, 1),
-            n_gpu_layers=gpu_config.n_gpu_layers,  # offload layers to GPU if available
-            verbose=False,
-        )
+        model = LlamaCppChatModel(model_path, verbose=False)
     except Exception as exc:
         raise RuntimeError(f"failed to initialize local model: {exc}") from exc
 
-    try:
-        result = llm.invoke(prompt)
-    except Exception as exc:
-        raise RuntimeError(f"model invocation failed: {exc}") from exc
-
-    return str(result).strip()
+    return generate_schema_sql_with_retry(model, prompt)
 
 
 def ensure_schema_model() -> Path:

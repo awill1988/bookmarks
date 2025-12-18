@@ -9,7 +9,8 @@ from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from langgraph.graph import END, StateGraph
 
 
-DEFAULT_DB_PATH = Path("vectors.db")
+DEFAULT_DB_PATH = Path("data/vectors.db")
+DEFAULT_CACHE_DIR = Path("data/models")
 
 
 def parse_url_components(url: str) -> dict[str, str | list[str]]:
@@ -248,10 +249,16 @@ def persist_sqlite_node(state: GraphState) -> GraphState:
 def build_demo_graph(
     model_name: str = "BAAI/bge-small-en-v1.5",
     embedder_factory: Callable[[str], EmbeddingModel] = FastEmbedEmbeddings,
+    cache_dir: Path | None = None,
 ):
     """Create a LangGraph pipeline to embed bookmarks into sqlite."""
     graph = StateGraph(GraphState)
-    embedder = embedder_factory(model_name=model_name)
+
+    # Use default cache directory if not specified
+    model_cache = cache_dir or DEFAULT_CACHE_DIR
+    model_cache.mkdir(parents=True, exist_ok=True)
+
+    embedder = embedder_factory(model_name=model_name, cache_dir=str(model_cache))
 
     graph.add_node("load", load_bookmarks_node)
     graph.add_node("embed", embed_bookmarks_node(embedder))

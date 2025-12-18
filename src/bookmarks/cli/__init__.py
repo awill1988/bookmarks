@@ -2,15 +2,61 @@ import argparse
 from pathlib import Path
 
 from bookmarks.cli import common, gen, vis
-from bookmarks.cli.embed import run_demo_graph, run_export_torch
-from bookmarks.cli.schema import run_schema_graph, run_schema_stub
-from bookmarks.cli.vis import run_vis_torch
+from bookmarks.tracing import configure_tracing
+
+
+def run_demo_graph(args: argparse.Namespace) -> int:
+    from bookmarks.cli.embed import run_demo_graph as impl
+
+    return impl(args)
+
+
+def run_export_torch(args: argparse.Namespace) -> int:
+    from bookmarks.cli.embed import run_export_torch as impl
+
+    return impl(args)
+
+
+def run_schema_stub(args: argparse.Namespace) -> int:
+    from bookmarks.cli.schema import run_schema_stub as impl
+
+    return impl(args)
+
+
+def run_schema_graph(args: argparse.Namespace) -> int:
+    from bookmarks.cli.schema import run_schema_graph as impl
+
+    return impl(args)
+
+
+def run_vis_torch(args: argparse.Namespace) -> int:
+    from bookmarks.cli.vis import run_vis_torch as impl
+
+    return impl(args)
+
+
+def run_vis_cluster(args: argparse.Namespace) -> int:
+    from bookmarks.cli.vis import run_vis_cluster as impl
+
+    return impl(args)
+
+
+def run_vis_organize(args: argparse.Namespace) -> int:
+    from bookmarks.cli.vis import run_vis_organize as impl
+
+    return impl(args)
+
+
+def run_vis_neighbors(args: argparse.Namespace) -> int:
+    from bookmarks.cli.vis import run_vis_neighbors as impl
+
+    return impl(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "agent-driven bookmarks scaffold: inspect cli arguments or generate artifacts via langgraph"
+            "agent-driven bookmarks scaffold: inspect cli arguments or generate artifacts"
         )
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -66,6 +112,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     common.configure_logging()
+    configure_tracing()
 
     command_handler = getattr(args, "command_handler", None)
     if command_handler is None:
@@ -82,4 +129,7 @@ __all__ = [
     "run_schema_graph",
     "run_export_torch",
     "run_vis_torch",
+    "run_vis_cluster",
+    "run_vis_organize",
+    "run_vis_neighbors",
 ]

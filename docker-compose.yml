@@ -1,0 +1,153 @@
+services:
+  bookmarks:
+    image: bookmarks:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      LOG_LEVEL: info
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+    command: gen schema-graph -i ./data/bookmarks.json --output data/schema.sql
+    depends_on:
+      - otel-collector
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317" # otlp grpc
+      - "4318:4318" # otlp http
+      - "13133:13133" # health check
+
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3
+    restart: unless-stopped
+    depends_on: &langfuse-depends-on
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    environment: &langfuse-worker-env
+      NEXTAUTH_URL: http://localhost:3000
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: local_dev_salt
+      ENCRYPTION_KEY: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+      TELEMETRY_ENABLED: "false"
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: redis_local_dev
+
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3
+    restart: unless-stopped
+    depends_on: *langfuse-depends-on
+    ports:
+      - 3000:3000
+    environment:
+      <<: *langfuse-worker-env
+      NEXTAUTH_SECRET: local_dev_nextauth_secret
+      # headless initialization - auto-creates project with fixed api keys
+      LANGFUSE_INIT_USER_EMAIL: dev@example.com
+      LANGFUSE_INIT_USER_NAME: local_dev
+      LANGFUSE_INIT_USER_PASSWORD: local_dev_password
+      LANGFUSE_INIT_ORG_ID: local-dev-org
+      LANGFUSE_INIT_ORG_NAME: local_dev_org
+      LANGFUSE_INIT_PROJECT_ID: local-dev-project
+      LANGFUSE_INIT_PROJECT_NAME: local_dev_project
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: lf-local-dev-public-key
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: lf-local-dev-secret-key
+
+  clickhouse:
+    image: docker.io/clickhouse/clickhouse-server
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: cgr.dev/chainguard/minio
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    ports:
+      - 9090:9000
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: docker.io/redis:7
+    restart: unless-stopped
+    command: --requirepass redis_local_dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: docker.io/postgres:17
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  minio_data:

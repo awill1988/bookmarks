@@ -30,14 +30,23 @@
           packages = [
             python
             pkgs.uv
-            python_pkgs.hatchling
+            pkgs.maturin
+            pkgs.cargo
+            pkgs.rustc
             pkgs.cmake
             pkgs.pkg-config
             pkgs.gcc
+            pkgs.zlib
+            pkgs.docker
           ] ++ (if isDarwin then [ ] else [ pkgs.cudatoolkit ]);
 
           shellHook = ''
-            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+            # enable wsl nvidia gpu driver libraries when running under wsl
+            if [ -d /usr/lib/wsl/lib ]; then
+              export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
+            fi
 	    export MAKEFLAGS="-j8"
 	    ${if isDarwin then ''
               export CMAKE_ARGS="-DGGML_METAL=on"
@@ -45,6 +54,17 @@
               export CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_BUILD_PARALLEL_LEVEL=8"
             ''}
           '';
+        };
+
+        apps.docker-build = {
+          type = "app";
+          program = toString (pkgs.writeShellScript "docker-build" ''
+            set -e
+            IMAGE_TAG=''${1:-bookmarks:latest}
+            echo "building docker image: $IMAGE_TAG"
+            ${pkgs.docker}/bin/docker build -t "$IMAGE_TAG" .
+            echo "image built and tagged: $IMAGE_TAG"
+          '');
         };
       });
 }

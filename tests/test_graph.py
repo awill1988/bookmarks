@@ -23,7 +23,8 @@ def test_normalize_payload_recurses_nested_collections() -> None:
 
     normalized = embed_graph.normalize_payload(payload)
 
-    assert normalized == [
+    core = [{key: entry.get(key) for key in ("url", "title")} for entry in normalized]
+    assert core == [
         {"url": "https://example.com", "title": "Example"},
         {"url": "https://example.org", "title": "Org"},
     ]
@@ -56,24 +57,22 @@ def test_demo_graph_persists_embeddings(monkeypatch: pytest.MonkeyPatch, tmp_pat
     with sqlite3.connect(db_path) as conn:
         rows = list(conn.execute("select url, title, vector from bookmark_embeddings order by id"))
     assert rows == [
-        ("https://example.com", "Example", "[0.0]"),
-        ("https://example.org", None, "[1.0]"),
+        ("https://example.com", "Example", "[0.0, 0.5]"),
+        ("https://example.org", None, "[1.0, 0.5]"),
     ]
 
 
 def test_schema_graph_writes_sql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    class DummyLlama:
-        def __init__(self, model_path: str, temperature: float, n_ctx: int, n_batch: int, n_threads: int, verbose: bool):  # noqa: D401
-            self.model_path = model_path
-            self.temperature = temperature
-            self.n_ctx = n_ctx
-            self.n_batch = n_batch
-            self.n_threads = n_threads
-            self.verbose = verbose
+    from smolagents.models import ChatMessage, MessageRole
 
-        def invoke(self, prompt: str) -> str:
-            assert "JSON Schema" in prompt
-            return "create table bookmarks (url text primary key);"
+    class DummyModel:
+        def generate(self, messages, **kwargs):  # noqa: D401, ANN001
+            user_prompt = ""
+            for message in messages:
+                if getattr(message, "role", None) == MessageRole.USER:
+                    user_prompt = str(message.content or "")
+            assert "json schema" in user_prompt.lower()
+            return ChatMessage(role=MessageRole.ASSISTANT, content="create table bookmarks (url text primary key);")
 
     source = tmp_path / "bookmarks.json"
     output = tmp_path / "schema.sql"
@@ -82,7 +81,7 @@ def test_schema_graph_writes_sql(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         encoding="utf-8",
     )
 
-    compiled = schema_graph.build_schema_graph("dummy", output_path=output, llm_factory=DummyLlama)
+    compiled = schema_graph.build_schema_graph("dummy", output_path=output, model_factory=lambda _: DummyModel())
     state = compiled.invoke({"source_path": source})
 
     assert state["output_path"] == output

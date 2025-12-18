@@ -43,6 +43,21 @@ def test_detect_gpu_backend_cuda():
             assert backend == "cuda"
 
 
+def test_detect_gpu_backend_wsl_cuda():
+    """test CUDA detection on wsl when libcuda is present even if nvidia-smi is not on PATH."""
+    with patch("platform.system", return_value="Linux"):
+        with patch("platform.release", return_value="6.6.0-microsoft-standard-wsl2"):
+            with patch("pathlib.Path.exists", autospec=True) as exists:
+                def _exists(path_self):  # noqa: ANN001
+                    text = str(path_self)
+                    if text == "/usr/lib/wsl/lib/libcuda.so.1":
+                        return True
+                    return False
+
+                exists.side_effect = _exists
+                assert detect_gpu_backend() == "cuda"
+
+
 def test_detect_gpu_backend_vulkan():
     """test Vulkan fallback on Linux without NVIDIA."""
     with patch("bookmarks.models.gpu._has_nvidia_gpu", return_value=False):
