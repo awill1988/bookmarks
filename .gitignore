@@ -1,23 +1,21 @@
-.pytest_cache/
-__pycache__/
-*.py[cod]
-.cache/
+# rust build artifacts
+target/
+*.so
+Cargo.lock
+
+# direnv and environment
 .direnv/
 .env
-.venv/
-.python-version
-.ruff_cache/
-.mypy_cache/
 result
 result-*
+
+# data and model files
 *.json
 *.db
 *.pt
 *.sql
-models
-^src/bookmarks/models
-.claude
-.uv_cache
-target/
-*.so
+models/
 data/
+
+# claude
+.claude
