@@ -14,6 +14,8 @@ uv sync                   # base dependencies
 uv sync --group torch     # add torch for visualization commands
 ```
 
+This project builds with `maturin`, so a rust toolchain is required; the nix devshell includes `cargo`, `rustc`, and `maturin`.
+
 ### GPU Acceleration
 
 GPU acceleration is **automatically configured** when entering the nix shell:
@@ -57,7 +59,7 @@ uv run bookmarks gen schema-graph -i bookmarks.json --output schema.sql
 |---------|-------------|---------|
 | `gen export` | Generate embeddings from bookmark JSON and store in SQLite | `uv run bookmarks gen export -i bookmarks.json --db-path vectors.db` |
 | `gen torch` | Export SQLite embeddings to Torch artifact | `uv run bookmarks gen torch --db-path vectors.db --output vectors.pt` |
-| `gen schema-graph` | Infer JSON schema and generate SQL DDL via LangGraph | `uv run bookmarks gen schema-graph -i bookmarks.json --output schema.sql` |
+| `gen schema-graph` | Infer JSON schema and generate SQL DDL via smolagents | `uv run bookmarks gen schema-graph -i bookmarks.json --output schema.sql` |
 
 ### Visualization commands
 
@@ -90,4 +92,19 @@ uv run bookmarks vis organize --artifact vectors.pt --resolutions all,year --out
 
 # 4. find similar bookmarks
 uv run bookmarks vis neighbors --artifact vectors.pt --index 0
+```
+
+## Tracing (phoenix)
+
+Start a local otel collector:
+
+```bash
+docker compose up -d otel-collector
+```
+
+Enable tracing export:
+
+```bash
+export PHOENIX_COLLECTOR_ENDPOINT="http://localhost:4317"
+export BOOKMARKS_ENABLE_TRACING=1
 ```

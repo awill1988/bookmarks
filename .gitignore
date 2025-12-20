@@ -1,20 +1,13 @@
-.pytest_cache/
-__pycache__/
-*.py[cod]
-.cache/
+# rust build artifacts
+target/
+*.so
+
+# direnv and environment
 .direnv/
 .env
-.venv/
-.python-version
-.ruff_cache/
-.mypy_cache/
 result
 result-*
-*.json
-*.db
-*.pt
-*.sql
-models
-^src/bookmarks/models
-.claude
-.uv_cache
+
+# cache directory (models, data, huggingface hub)
+.cache/
+data/*

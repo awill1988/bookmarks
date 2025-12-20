@@ -20,30 +20,42 @@
               in hasNvidiaPrefix;
           };
         };
-        python_pkgs = pkgs.python312Packages;
-        python = python_pkgs.python;
-
         isDarwin = pkgs.stdenv.isDarwin;
+
+        docker-build = pkgs.writeShellScriptBin "docker-build" ''
+          set -e
+          IMAGE_TAG=''${1:-bookmarks:latest}
+          echo "building docker image: $IMAGE_TAG"
+          ${pkgs.docker}/bin/docker build -t "$IMAGE_TAG" .
+          echo "image built and tagged: $IMAGE_TAG"
+        '';
 
       in {
         devShells.default = pkgs.mkShell {
           packages = [
-            python
-            pkgs.uv
-            python_pkgs.hatchling
+            pkgs.cargo
+            pkgs.rustc
             pkgs.cmake
             pkgs.pkg-config
             pkgs.gcc
+            pkgs.openssl
+            pkgs.openssl.dev
+            pkgs.zlib
+            pkgs.docker
+            docker-build
           ] ++ (if isDarwin then [ ] else [ pkgs.cudatoolkit ]);
 
           shellHook = ''
-            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH"
-	    export MAKEFLAGS="-j8"
-	    ${if isDarwin then ''
-              export CMAKE_ARGS="-DGGML_METAL=on"
-            '' else ''
-              export CMAKE_ARGS="-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=86 -DCMAKE_BUILD_PARALLEL_LEVEL=8"
-            ''}
+            export LD_LIBRARY_PATH="${pkgs.stdenv.cc.cc.lib}/lib:${pkgs.zlib}/lib:${pkgs.openssl.out}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            export PKG_CONFIG_PATH="${pkgs.openssl.dev}/lib/pkgconfig:${pkgs.zlib.dev}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+
+            # enable wsl nvidia gpu driver libraries when running under wsl
+            if [ -d /usr/lib/wsl/lib ]; then
+              export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
+            fi
+
+            # ensure required directories exist
+            mkdir -p .cache data
           '';
         };
       });

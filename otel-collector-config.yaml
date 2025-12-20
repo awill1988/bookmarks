@@ -1,0 +1,33 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  # langfuse exporter - uses auto-provisioned project from docker-compose.yml
+  otlphttp/langfuse:
+    endpoint: http://langfuse-web:3000/api/public/ingestion
+    headers:
+      X-Langfuse-Public-Key: lf-local-dev-public-key
+      X-Langfuse-Secret-Key: lf-local-dev-secret-key
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug, otlphttp/langfuse]
