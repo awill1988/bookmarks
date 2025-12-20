@@ -4,15 +4,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    user: "${UID:-1000}:${GID:-1000}"
     environment:
-      LOG_LEVEL: info
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
-    command: gen schema-graph -i ./data/bookmarks.json --output data/schema.sql
-    depends_on:
-      - otel-collector
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - BOOKMARKS_ENABLE_TRACING=${BOOKMARKS_ENABLE_TRACING:-false}
+      - PHOENIX_COLLECTOR_ENDPOINT=${PHOENIX_COLLECTOR_ENDPOINT:-http://otel-collector:4317}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      - HF_HOME=/app/.cache
     volumes:
+      - model_cache:/app/.cache
       - ./data:/app/data
-      - ./models:/app/models
+    command: gen schema --input data/bookmarks.json --output data/bookmarks.sql
     deploy:
       resources:
         reservations:
@@ -20,6 +22,8 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    profiles:
+      - nvidia
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest
@@ -148,6 +152,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
 
 volumes:
+  model_cache:
   postgres_data:
   clickhouse_data:
   minio_data:

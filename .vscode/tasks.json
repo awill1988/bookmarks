@@ -1,0 +1,103 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "docker build (local)",
+      "type": "shell",
+      "command": "docker",
+      "args": ["build", "-t", "bookmarks:local", "."],
+      "group": "build"
+    },
+    {
+      "label": "docker compose up",
+      "type": "shell",
+      "command": "docker",
+      "args": ["compose", "up", "-d"]
+    },
+    {
+      "label": "cargo build (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--workspace"],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cargo build (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build", "--workspace", "--release"],
+      "group": "build"
+    },
+    {
+      "label": "cargo test (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["test", "--workspace"],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "cargo test (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["test", "--workspace", "--release"],
+      "group": "test"
+    },
+    {
+      "label": "cargo run (debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "bookmarks"],
+      "options": {
+        "env": {
+          "LOG_LEVEL": "debug",
+          "RUST_LOG": "debug"
+        }
+      }
+    },
+    {
+      "label": "cargo run (release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "bookmarks", "--release"],
+      "options": {
+        "env": {
+          "LOG_LEVEL": "info",
+          "RUST_LOG": "info"
+        }
+      }
+    },
+    {
+      "label": "cargo run (mem profile debug)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "bookmarks"],
+      "options": {
+        "env": {
+          "LOG_LEVEL": "debug",
+          "RUST_LOG": "debug",
+          "MIMALLOC_SHOW_STATS": "1"
+        }
+      }
+    },
+    {
+      "label": "cargo run (mem profile release)",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["run", "-p", "bookmarks", "--release"],
+      "options": {
+        "env": {
+          "LOG_LEVEL": "info",
+          "RUST_LOG": "info",
+          "MIMALLOC_SHOW_STATS": "1"
+        }
+      }
+    }
+  ]
+}
+

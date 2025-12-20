@@ -22,6 +22,14 @@
         };
         isDarwin = pkgs.stdenv.isDarwin;
 
+        docker-build = pkgs.writeShellScriptBin "docker-build" ''
+          set -e
+          IMAGE_TAG=''${1:-bookmarks:latest}
+          echo "building docker image: $IMAGE_TAG"
+          ${pkgs.docker}/bin/docker build -t "$IMAGE_TAG" .
+          echo "image built and tagged: $IMAGE_TAG"
+        '';
+
       in {
         devShells.default = pkgs.mkShell {
           packages = [
@@ -34,6 +42,7 @@
             pkgs.openssl.dev
             pkgs.zlib
             pkgs.docker
+            docker-build
           ] ++ (if isDarwin then [ ] else [ pkgs.cudatoolkit ]);
 
           shellHook = ''
@@ -44,18 +53,10 @@
             if [ -d /usr/lib/wsl/lib ]; then
               export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$LD_LIBRARY_PATH"
             fi
-          '';
-        };
 
-        apps.docker-build = {
-          type = "app";
-          program = toString (pkgs.writeShellScript "docker-build" ''
-            set -e
-            IMAGE_TAG=''${1:-bookmarks:latest}
-            echo "building docker image: $IMAGE_TAG"
-            ${pkgs.docker}/bin/docker build -t "$IMAGE_TAG" .
-            echo "image built and tagged: $IMAGE_TAG"
-          '');
+            # ensure required directories exist
+            mkdir -p .cache data
+          '';
         };
       });
 }

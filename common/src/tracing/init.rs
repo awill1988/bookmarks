@@ -1,15 +1,23 @@
-use crate::error::{BookmarksError, Result};
+use crate::error::Result;
+use opentelemetry::{trace::TracerProvider as _, KeyValue};
+use opentelemetry_sdk::Resource;
 use std::env;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 pub struct OtelGuard {
-    _dummy: (),
+    tracer_provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
 impl Drop for OtelGuard {
     fn drop(&mut self) {
-        // cleanup if needed
+        if let Some(provider) = self.tracer_provider.take() {
+            // flush remaining traces on shutdown
+            if let Err(e) = provider.shutdown() {
+                eprintln!("error shutting down tracer provider: {}", e);
+            }
+        }
     }
 }
 
@@ -25,12 +33,11 @@ pub fn init_tracing(service_name: &str) -> Result<OtelGuard> {
         .or_else(|_| env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
         .ok();
 
-    if !enabled && endpoint.is_none() {
+    if !enabled || endpoint.is_none() {
         // tracing not enabled, just set up basic logging
         let subscriber = tracing_subscriber::fmt()
             .with_env_filter(
-                tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "info".into()),
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
             )
             .finish();
 
@@ -38,27 +45,51 @@ pub fn init_tracing(service_name: &str) -> Result<OtelGuard> {
 
         tracing::info!("basic logging initialized (service={})", service_name);
 
-        return Ok(OtelGuard { _dummy: () });
+        return Ok(OtelGuard {
+            tracer_provider: None,
+        });
     }
 
-    // for now, just use basic logging even if OTEL is enabled
-    // full OTEL support would require additional configuration
-    let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
-        )
-        .finish();
+    let endpoint_url = endpoint.unwrap();
+
+    // initialize otlp exporter with tonic (grpc)
+    use opentelemetry_otlp::WithExportConfig;
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(&endpoint_url)
+        .build()
+        .map_err(|e| crate::error::BookmarksError::Tracing(format!("exporter build failed: {}", e)))?;
+
+    let resource = Resource::builder_empty()
+        .with_attribute(KeyValue::new("service.name", service_name.to_string()))
+        .build();
+
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(resource)
+        .build();
+
+    // bridge tracing to opentelemetry
+    let telemetry = tracing_opentelemetry::layer().with_tracer(provider.tracer(service_name.to_string()));
+
+    // combine telemetry layer with fmt layer for console output
+    let subscriber = tracing_subscriber::registry()
+        .with(telemetry)
+        .with(tracing_subscriber::fmt::layer())
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()));
 
     subscriber.init();
 
-    if let Some(ep) = endpoint {
-        tracing::info!("tracing initialized for {} (would send to: {})", service_name, ep);
-    } else {
-        tracing::info!("tracing initialized for {}", service_name);
-    }
+    tracing::info!(
+        "opentelemetry tracing initialized for {} (endpoint: {})",
+        service_name,
+        endpoint_url
+    );
 
-    Ok(OtelGuard { _dummy: () })
+    Ok(OtelGuard {
+        tracer_provider: Some(provider),
+    })
 }
 
 #[cfg(test)]

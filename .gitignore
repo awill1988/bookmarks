@@ -1,7 +1,6 @@
 # rust build artifacts
 target/
 *.so
-Cargo.lock
 
 # direnv and environment
 .direnv/
@@ -9,13 +8,6 @@ Cargo.lock
 result
 result-*
 
-# data and model files
-*.json
-*.db
-*.pt
-*.sql
-models/
-data/
-
-# claude
-.claude
+# cache directory (models, data, huggingface hub)
+.cache/
+data/*

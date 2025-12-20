@@ -1,10 +1,10 @@
 use crate::error::{BookmarksError, Result};
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 const DEFAULT_REPO_ID: &str = "TheBloke/Llama-2-7B-Chat-GGUF";
 const DEFAULT_FILENAME: &str = "llama-2-7b-chat.Q4_K_M.gguf";
-const DEFAULT_CACHE_DIR: &str = "models";
+const DEFAULT_CACHE_DIR: &str = ".cache/models";
 
 pub fn ensure_gguf_model(
     repo_id: Option<String>,
@@ -13,14 +13,29 @@ pub fn ensure_gguf_model(
 ) -> Result<PathBuf> {
     // read from environment variables if not provided
     let repo_id = repo_id
-        .or_else(|| env::var("BOOKMARKS_SCHEMA_REPO_ID").ok())
+        .or_else(|| {
+            env::var("BOOKMARKS_SCHEMA_REPO_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_REPO_ID.to_string());
 
     let filename = filename
-        .or_else(|| env::var("BOOKMARKS_SCHEMA_FILENAME").ok())
+        .or_else(|| {
+            env::var("BOOKMARKS_SCHEMA_FILENAME")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or_else(|| DEFAULT_FILENAME.to_string());
 
-    let cache_dir = cache_dir.unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR));
+    let cache_dir = cache_dir
+        .or_else(|| {
+            env::var("BOOKMARKS_CACHE_DIR")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        })
+        .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR));
 
     // create cache directory if it doesn't exist
     std::fs::create_dir_all(&cache_dir)?;

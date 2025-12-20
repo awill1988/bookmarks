@@ -31,6 +31,18 @@ enum GenCommands {
         #[arg(short, long)]
         output: PathBuf,
 
+        /// JSON Schema output path (default: <input>.schema.json)
+        #[arg(long)]
+        json_schema_output: Option<PathBuf>,
+
+        /// Disable JSON Schema generation
+        #[arg(long, default_value = "false")]
+        no_json_schema: bool,
+
+        /// Enhance JSON Schema with LLM-generated descriptions
+        #[arg(long, default_value = "false")]
+        enhance_json_schema: bool,
+
         /// HuggingFace model repository ID
         #[arg(long, env = "BOOKMARKS_SCHEMA_REPO_ID")]
         repo_id: Option<String>,
@@ -56,13 +68,26 @@ impl Cli {
                 GenCommands::Schema {
                     input,
                     output,
+                    json_schema_output,
+                    no_json_schema,
+                    enhance_json_schema,
                     repo_id,
                     filename,
                     cache_dir,
                     max_attempts,
                 } => {
-                    generate_schema(input, output, repo_id, filename, cache_dir, max_attempts)
-                        .await
+                    generate_schema(
+                        input,
+                        output,
+                        json_schema_output,
+                        no_json_schema,
+                        enhance_json_schema,
+                        repo_id,
+                        filename,
+                        cache_dir,
+                        max_attempts,
+                    )
+                    .await
                 }
             },
         }
@@ -72,72 +97,160 @@ impl Cli {
 async fn generate_schema(
     input: PathBuf,
     output: PathBuf,
+    json_schema_output: Option<PathBuf>,
+    no_json_schema: bool,
+    enhance_json_schema: bool,
     repo_id: Option<String>,
     filename: Option<String>,
     cache_dir: Option<PathBuf>,
     max_attempts: usize,
 ) -> Result<()> {
-    use common::agent::{build_schema_task_prompt, generate_schema_sql_with_retry};
+    use common::dag::{Dag, DagExecutor, Task, TaskContext, TaskOutput};
+    use common::dag::task::{JsonSchemaGenerationTask, SqlGenerationTask};
     use common::llm::{ensure_gguf_model, LlamaModel, ModelConfig};
     use common::schema::{derive_field_hints, infer_json_schema};
     use common::tracing::init_tracing;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tracing::Instrument;
 
     // initialize tracing
     let _guard = init_tracing("bookmarks")?;
 
     tracing::info!("loading bookmarks from {}", input.display());
 
-    // load JSON file
-    let json_text = std::fs::read_to_string(&input)?;
-    let payload: serde_json::Value = serde_json::from_str(&json_text)?;
+    // load and infer schema (sequential phase)
+    let schema_span = tracing::info_span!("schema_inference");
+    let (schema, hints) = async {
+        let json_text = std::fs::read_to_string(&input)?;
+        let payload: serde_json::Value = serde_json::from_str(&json_text)?;
 
-    let item_count = if payload.is_array() {
-        payload.as_array().map(|a| a.len()).unwrap_or(0)
+        let item_count = if payload.is_array() {
+            payload.as_array().map(|a| a.len()).unwrap_or(0)
+        } else {
+            1
+        };
+        tracing::info!("loaded {} top-level items", item_count);
+
+        tracing::info!("inferring json schema from payload structure");
+        let schema = infer_json_schema(&payload);
+        let hints = derive_field_hints(&schema);
+
+        // log detected hints
+        let mut hint_summary = Vec::new();
+        if !hints.timestamps.is_empty() {
+            hint_summary.push(format!("{} timestamp fields", hints.timestamps.len()));
+        }
+        if !hints.folders.is_empty() {
+            hint_summary.push(format!("{} folder/tag fields", hints.folders.len()));
+        }
+        if !hint_summary.is_empty() {
+            tracing::info!("detected: {}", hint_summary.join(", "));
+        }
+
+        Ok::<_, anyhow::Error>((schema, hints))
+    }
+    .instrument(schema_span)
+    .await?;
+
+    // derive json schema output path if not specified
+    let json_schema_path = if no_json_schema {
+        None
     } else {
-        1
+        Some(json_schema_output.unwrap_or_else(|| {
+            let stem = input
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("bookmarks");
+            input.with_file_name(format!("{}.schema.json", stem))
+        }))
     };
-    tracing::info!("loaded {} top-level items", item_count);
-
-    // infer schema
-    tracing::info!("inferring json schema from payload structure");
-    let schema = infer_json_schema(&payload);
-    let hints = derive_field_hints(&schema);
-
-    // log detected hints
-    let mut hint_summary = Vec::new();
-    if !hints.timestamps.is_empty() {
-        hint_summary.push(format!("{} timestamp fields", hints.timestamps.len()));
-    }
-    if !hints.folders.is_empty() {
-        hint_summary.push(format!("{} folder/tag fields", hints.folders.len()));
-    }
-    if !hint_summary.is_empty() {
-        tracing::info!("detected: {}", hint_summary.join(", "));
-    }
 
     // download/load model
     tracing::info!("ensuring model is available");
     let model_path = ensure_gguf_model(repo_id, filename, cache_dir)?;
 
     tracing::info!("loading language model from {}", model_path.display());
-    let model = LlamaModel::new(model_path, ModelConfig::default())?;
+    let model = Arc::new(LlamaModel::new(model_path, ModelConfig::default())?);
     tracing::info!("model loaded successfully");
 
-    // build prompt
-    let prompt = build_schema_task_prompt(&schema, &hints);
-
-    // generate SQL with retry
-    tracing::info!("invoking llm to generate sql schema (this may take a while)");
-    let sql_text = generate_schema_sql_with_retry(&model, &prompt, max_attempts)?;
-    tracing::info!("llm synthesis complete");
-
-    // write output
-    if let Some(parent) = output.parent() {
-        std::fs::create_dir_all(parent)?;
+    // build dag
+    let mut dag = Dag::new();
+    dag.add_task("sql_generation".to_string(), vec![]);
+    if json_schema_path.is_some() {
+        dag.add_task("json_schema_generation".to_string(), vec![]);
     }
-    std::fs::write(&output, &sql_text)?;
 
-    tracing::info!("wrote sql schema to {}", output.display());
+    // create task implementations
+    let mut tasks: HashMap<String, Arc<dyn Task>> = HashMap::new();
+    tasks.insert(
+        "sql_generation".to_string(),
+        Arc::new(SqlGenerationTask),
+    );
+    if json_schema_path.is_some() {
+        tasks.insert(
+            "json_schema_generation".to_string(),
+            Arc::new(JsonSchemaGenerationTask {
+                enhance_with_llm: enhance_json_schema,
+            }),
+        );
+    }
+
+    // prepare task context
+    let ctx = TaskContext {
+        schema,
+        hints,
+        model,
+        max_attempts,
+    };
+
+    // execute dag
+    tracing::info!("invoking llm to generate schemas (this may take a while)");
+    let executor = DagExecutor::new(dag)?;
+    let results = executor.execute(tasks, ctx).await?;
+
+    // write outputs
+    if let Some(sql_result) = results.get("sql_generation") {
+        match &sql_result.output {
+            TaskOutput::Sql(sql) => {
+                if let Some(parent) = output.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                std::fs::write(&output, sql)?;
+                tracing::info!(
+                    output = %output.display(),
+                    duration_ms = sql_result.duration_ms,
+                    "wrote sql schema"
+                );
+            }
+            _ => {
+                return Err(anyhow::anyhow!("unexpected output type from sql generation"));
+            }
+        }
+    }
+
+    if let Some(json_path) = json_schema_path {
+        if let Some(json_result) = results.get("json_schema_generation") {
+            match &json_result.output {
+                TaskOutput::JsonSchema(json) => {
+                    if let Some(parent) = json_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&json_path, json)?;
+                    tracing::info!(
+                        output = %json_path.display(),
+                        duration_ms = json_result.duration_ms,
+                        "wrote json schema"
+                    );
+                }
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "unexpected output type from json schema generation"
+                    ));
+                }
+            }
+        }
+    }
 
     Ok(())
 }

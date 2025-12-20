@@ -1,4 +1,4 @@
-use crate::error::{BookmarksError, Result};
+use crate::error::Result;
 use crate::llm::gpu::get_gpu_config;
 use std::path::PathBuf;
 
@@ -58,8 +58,8 @@ impl Default for ModelConfig {
 }
 
 pub struct LlamaModel {
-    model_path: PathBuf,
-    config: ModelConfig,
+    _model_path: PathBuf,
+    _config: ModelConfig,
 }
 
 impl LlamaModel {
@@ -73,8 +73,8 @@ impl LlamaModel {
         tracing::info!("model initialized for {}", model_path.display());
 
         Ok(Self {
-            model_path,
-            config,
+            _model_path: model_path,
+            _config: config,
         })
     }
 

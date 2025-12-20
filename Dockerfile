@@ -1,20 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 as builder
-
-# install python 3.12
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.12 \
-    python3.12-dev \
-    python3.12-venv \
-    && rm -rf /var/lib/apt/lists/*
-
-# set python alternatives
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+FROM nvidia/cuda:12.4.0-devel-ubuntu22.04 AS builder
 
 # install build dependencies
 RUN apt-get update && apt-get install -y \
@@ -22,55 +8,46 @@ RUN apt-get update && apt-get install -y \
     cmake \
     pkg-config \
     curl \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# install rust toolchain for maturin builds
+# install rust toolchain
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# install uv for fast python dependency management
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
-
 WORKDIR /app
 
-# copy project files
-COPY README.md pyproject.toml uv.lock ./
+# copy workspace files
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
-COPY native ./native
+COPY common ./common
+COPY bookmarks ./bookmarks
 
-# build the application with all dependencies
-# set cmake args for llama-cpp-python cuda support
-ENV CMAKE_ARGS="-DGGML_CUDA=on" \
-    FORCE_CMAKE=1
-RUN uv sync --frozen --no-dev
+# build release binary
+RUN cargo build --release
 
 FROM nvidia/cuda:12.4.0-runtime-ubuntu22.04
 
-# install python 3.12
+# install runtime dependencies
 RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository ppa:deadsnakes/ppa \
-    && apt-get update && apt-get install -y \
-    python3.12 \
-    python3.12-venv \
     libgomp1 \
+    libssl3 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-
-# set python alternatives
-RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
 
 WORKDIR /app
 
-# copy built application from builder
-COPY --from=builder /app/.venv /app/.venv
-COPY --from=builder /app/src /app/src
+# copy binary from builder
+COPY --from=builder /app/target/release/bookmarks /usr/local/bin/bookmarks
+
+# create cache and data directories with proper ownership
+RUN mkdir -p /app/.cache /app/data && \
+    chown -R 65534:65534 /app
 
 # set environment variables
-ENV PATH="/app/.venv/bin:${PATH}" \
-    PYTHONUNBUFFERED=1 \
-    LOG_LEVEL=info
+ENV LOG_LEVEL=info
+
+# switch to nobody user (65534:65534)
+USER 65534:65534
 
 ENTRYPOINT ["bookmarks"]
 CMD ["--help"]
